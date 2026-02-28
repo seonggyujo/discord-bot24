@@ -1,23 +1,20 @@
 """
-cpu_bot.py — CPU 부하 유지 봇
-Oracle Cloud Free Tier의 idle 회수 정책 방지를 위해
-주기적으로 무거운 수학 연산을 실행하고 결과를 Discord에 전송합니다.
+cpu_bot.py — Oracle idle 방지 cron 모니터링 봇
+/etc/cron.d/dummy-load 의 실행 상태를 주기적으로 Discord에 보고합니다.
+
+cron 설정 예시:
+  echo "*/5 * * * * root timeout 290 nice md5sum /dev/zero" | sudo tee /etc/cron.d/dummy-load
 
 실행: python cpu_bot.py
 """
 
 import asyncio
 import logging
-import math
-import multiprocessing
 import os
-import random
-import time
-from concurrent.futures import ProcessPoolExecutor
+import subprocess
 from datetime import datetime, timezone, timedelta
 
 import discord
-from discord.ext import tasks
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -32,136 +29,162 @@ log = logging.getLogger("cpu-bot")
 KST = timezone(timedelta(hours=9))
 
 # ── 환경변수 ──────────────────────────────────────────────
-CPU_BOT_TOKEN      = os.getenv("CPU_BOT_TOKEN", "")
-CPU_CHANNEL_ID     = int(os.getenv("CPU_CHANNEL_ID", "0"))
-COMPUTE_INTERVAL   = 10 * 60          # 사용 안 함 (랜덤 주기로 대체)
-NUM_WORKERS        = max(1, multiprocessing.cpu_count() * 3 // 4)  # 3/4 코어 사용 (~75% 목표)
-SIEVE_LIMIT        = 150_000_000      # 소수 탐색 상한 (1억5000만)
-HASH_ITERATIONS    = 120_000_000      # SHA-256 반복 횟수 (1억2000만)
-INTERVAL_MIN       = 3 * 60          # 최소 대기 (3분)
-INTERVAL_MAX       = 8 * 60          # 최대 대기 (8분)
+CPU_BOT_TOKEN  = os.getenv("CPU_BOT_TOKEN", "")
+CPU_CHANNEL_ID = int(os.getenv("CPU_CHANNEL_ID", "0"))
+
+# 보고 주기 (초) — 10분마다 한 번
+REPORT_INTERVAL = 10 * 60
+
+# cron 파일 경로
+CRON_FILE = "/etc/cron.d/dummy-load"
+# cron이 실행하는 명령어 키워드
+CRON_PROCESS_KEYWORD = "md5sum"
 
 # ── 임베드 색상 ───────────────────────────────────────────
-COLOR_INFO  = 0x3498DB
-COLOR_WARN  = 0xE67E22
+COLOR_OK   = 0x2ECC71   # 초록 — cron 정상 동작
+COLOR_WARN = 0xE67E22   # 주황 — cron 파일 있지만 프로세스 없음
+COLOR_ERR  = 0xE74C3C   # 빨강 — cron 파일 없음
 
 
 # ══════════════════════════════════════════════════════════
-# 수학 연산 함수들 (별도 프로세스에서 실행)
+# 시스템 정보 수집 (블로킹, 별도 스레드에서 호출)
 # ══════════════════════════════════════════════════════════
 
-def _sieve_of_eratosthenes(limit: int) -> int:
-    """에라토스테네스의 체로 limit 이하 소수 개수 반환"""
-    sieve = bytearray([1]) * (limit + 1)
-    sieve[0] = sieve[1] = 0
-    for i in range(2, int(math.sqrt(limit)) + 1):
-        if sieve[i]:
-            sieve[i * i::i] = bytearray(len(sieve[i * i::i]))
-    return sum(sieve)
+def _check_cron_file() -> bool:
+    """cron 파일이 존재하는지 확인"""
+    return os.path.isfile(CRON_FILE)
 
 
-def _hash_stress(iterations: int) -> str:
-    """SHA-256 해시를 반복 연산하여 CPU 부하 발생, 최종 해시값 반환"""
-    import hashlib
-    data = b"oracle-cpu-keepalive"
-    for _ in range(iterations):
-        data = hashlib.sha256(data).digest()
-    return data.hex()
+def _read_cron_file() -> str:
+    """cron 파일 내용 반환 (없으면 빈 문자열)"""
+    try:
+        with open(CRON_FILE, "r") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
 
 
-def _worker_task(worker_id: int) -> dict:
-    """
-    단일 워커가 수행하는 작업:
-      1. 소수 탐색 (에라토스테네스의 체)
-      2. SHA-256 해시 반복 연산
-    결과를 dict로 반환
-    """
-    result = {"worker_id": worker_id}
-
-    # 소수 탐색
-    t0 = time.perf_counter()
-    prime_count = _sieve_of_eratosthenes(SIEVE_LIMIT)
-    sieve_time = time.perf_counter() - t0
-    result["prime_count"] = prime_count
-    result["sieve_time"]  = sieve_time
-
-    # SHA-256 해시 반복
-    t0 = time.perf_counter()
-    final_hash = _hash_stress(HASH_ITERATIONS)
-    hash_time = time.perf_counter() - t0
-    result["final_hash"] = final_hash[:16]  # 앞 16자만 저장
-    result["hash_time"]  = hash_time
-
-    return result
+def _check_cron_process() -> int:
+    """현재 실행 중인 md5sum 프로세스 수 반환"""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-c", CRON_PROCESS_KEYWORD],
+            capture_output=True, text=True, timeout=5
+        )
+        count = result.stdout.strip()
+        return int(count) if count.isdigit() else 0
+    except Exception:
+        return 0
 
 
-def run_parallel_compute() -> dict:
-    """
-    모든 CPU 코어에서 병렬로 연산 실행.
-    ProcessPoolExecutor를 사용해 GIL 우회.
-    """
-    t_start = time.perf_counter()
+def _get_cpu_percent() -> float:
+    """현재 전체 CPU 사용률 반환 (psutil)"""
+    try:
+        import psutil
+        return psutil.cpu_percent(interval=1)
+    except Exception:
+        return -1.0
 
-    with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        futures = [executor.submit(_worker_task, i) for i in range(NUM_WORKERS)]
-        results = [f.result() for f in futures]
 
-    total_time = time.perf_counter() - t_start
+def _get_load_avg() -> tuple[float, float, float]:
+    """1분 / 5분 / 15분 load average 반환"""
+    try:
+        load = os.getloadavg()
+        return load[0], load[1], load[2]
+    except Exception:
+        return (-1.0, -1.0, -1.0)
 
-    avg_sieve = sum(r["sieve_time"] for r in results) / NUM_WORKERS
-    avg_hash  = sum(r["hash_time"]  for r in results) / NUM_WORKERS
-    prime_count = results[0]["prime_count"]   # 모든 워커 동일
+
+def collect_status() -> dict:
+    """모든 상태 정보를 수집해 dict로 반환"""
+    cron_exists  = _check_cron_file()
+    cron_content = _read_cron_file() if cron_exists else ""
+    proc_count   = _check_cron_process()
+    cpu_pct      = _get_cpu_percent()
+    load1, load5, load15 = _get_load_avg()
 
     return {
-        "num_workers":   NUM_WORKERS,
-        "sieve_limit":   SIEVE_LIMIT,
-        "prime_count":   prime_count,
-        "hash_iterations": HASH_ITERATIONS,
-        "avg_sieve_sec": avg_sieve,
-        "avg_hash_sec":  avg_hash,
-        "total_sec":     total_time,
+        "cron_exists":   cron_exists,
+        "cron_content":  cron_content,
+        "proc_count":    proc_count,
+        "cpu_pct":       cpu_pct,
+        "load1":         load1,
+        "load5":         load5,
+        "load15":        load15,
     }
 
 
 # ══════════════════════════════════════════════════════════
-# Discord 봇
+# Discord Embed 빌더
 # ══════════════════════════════════════════════════════════
 
-def build_result_embed(info: dict, cpu_before: float, cpu_after: float) -> discord.Embed:
+def build_embed(s: dict) -> discord.Embed:
     now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST")
 
+    # 상태 판정
+    if not s["cron_exists"]:
+        color  = COLOR_ERR
+        status = "❌ cron 파일 없음"
+        desc   = f"`{CRON_FILE}` 가 존재하지 않습니다.\n서버에서 아래 명령어로 설정하세요:"
+    elif s["proc_count"] == 0:
+        color  = COLOR_WARN
+        status = "⚠️ cron 등록됨 / 현재 프로세스 없음"
+        desc   = f"`{CRON_FILE}` 파일은 있지만 `{CRON_PROCESS_KEYWORD}` 프로세스가 실행 중이 아닙니다.\n(5분 주기 cron — 대기 중일 수 있습니다)"
+    else:
+        color  = COLOR_OK
+        status = f"✅ cron 실행 중 ({s['proc_count']}개 프로세스)"
+        desc   = f"`{CRON_PROCESS_KEYWORD}` 프로세스가 **{s['proc_count']}개** 실행 중입니다."
+
     embed = discord.Embed(
-        title="🖥️ CPU 연산 완료",
-        description=(
-            f"**{info['num_workers']}코어** 병렬 연산이 완료되었습니다.\n"
-            f"총 소요 시간: **{info['total_sec']:.2f}초**"
-        ),
-        color=COLOR_INFO,
+        title=f"🔧 Oracle idle 방지 — {status}",
+        description=desc,
+        color=color,
         timestamp=datetime.now(timezone.utc),
     )
 
+    # cron 파일 내용
+    if s["cron_exists"] and s["cron_content"]:
+        embed.add_field(
+            name="cron 설정",
+            value=f"```\n{s['cron_content']}\n```",
+            inline=False,
+        )
+    elif not s["cron_exists"]:
+        embed.add_field(
+            name="설정 방법",
+            value=(
+                "```bash\n"
+                'echo "*/5 * * * * root timeout 290 nice md5sum /dev/zero" \\\n'
+                "  | sudo tee /etc/cron.d/dummy-load\n"
+                "```"
+            ),
+            inline=False,
+        )
+
+    # CPU 현황
+    cpu_str = f"{s['cpu_pct']:.1f}%" if s["cpu_pct"] >= 0 else "측정 불가"
+    load_str = (
+        f"{s['load1']:.2f} / {s['load5']:.2f} / {s['load15']:.2f}"
+        if s["load1"] >= 0 else "측정 불가"
+    )
     embed.add_field(
-        name="소수 탐색 (에라토스테네스의 체)",
+        name="현재 CPU 상태",
         value=(
-            f"범위: 2 ~ **{info['sieve_limit']:,}**\n"
-            f"소수 개수: **{info['prime_count']:,}개**\n"
-            f"코어당 평균 소요: **{info['avg_sieve_sec']:.2f}초**"
+            f"사용률: **{cpu_str}**\n"
+            f"Load avg (1 / 5 / 15분): **{load_str}**"
         ),
         inline=False,
     )
 
+    # Oracle idle 기준 안내
     embed.add_field(
-        name="SHA-256 해시 반복 연산",
+        name="Oracle idle 판정 기준 (A1 Flex)",
         value=(
-            f"반복 횟수: **{info['hash_iterations']:,}회**\n"
-            f"코어당 평균 소요: **{info['avg_hash_sec']:.2f}초**"
+            "7일 평균, 아래 세 조건 **모두** 충족 시 회수 대상:\n"
+            "• CPU 95th percentile < **20%**\n"
+            "• 네트워크 < **20%**\n"
+            "• 메모리 < **20%**"
         ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="CPU 사용률 변화",
-        value=f"연산 전: **{cpu_before:.1f}%** → 연산 후: **{cpu_after:.1f}%**",
         inline=False,
     )
 
@@ -169,93 +192,67 @@ def build_result_embed(info: dict, cpu_before: float, cpu_after: float) -> disco
     return embed
 
 
-class CpuBot(discord.Client):
+# ══════════════════════════════════════════════════════════
+# Discord 봇
+# ══════════════════════════════════════════════════════════
+
+class CronMonitorBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
-        # 고정 결과 메시지 (edit용)
-        self._result_message: discord.Message | None = None
+        self._status_message: discord.Message | None = None
 
     async def setup_hook(self):
-        self.loop.create_task(self._compute_loop())
+        self.loop.create_task(self._report_loop())
 
     async def on_ready(self):
-        log.info(f"CPU 봇 로그인 완료: {self.user} (ID: {self.user.id})")
-        log.info(f"채널 ID: {CPU_CHANNEL_ID} | 워커 수: {NUM_WORKERS} | 주기: {INTERVAL_MIN//60}~{INTERVAL_MAX//60}분 랜덤")
+        log.info(f"cron 모니터 봇 로그인 완료: {self.user} (ID: {self.user.id})")
+        log.info(f"채널 ID: {CPU_CHANNEL_ID} | 보고 주기: {REPORT_INTERVAL // 60}분")
         await self.change_presence(
             activity=discord.Activity(
-                type=discord.ActivityType.playing,
-                name="수학 연산 중..."
+                type=discord.ActivityType.watching,
+                name="cron idle 방지 작업"
             )
         )
 
-    async def _compute_loop(self):
+    async def _report_loop(self):
         await self.wait_until_ready()
 
-        # 첫 연산 전 1분 대기
-        log.info("첫 연산까지 1분 대기...")
-        await asyncio.sleep(60)
+        # 시작 직후 첫 보고
+        await asyncio.sleep(5)
 
         while not self.is_closed():
-            await self._run_compute()
+            await self._send_report()
+            await asyncio.sleep(REPORT_INTERVAL)
 
-            # 다음 연산까지 랜덤 대기
-            next_sec = random.randint(INTERVAL_MIN, INTERVAL_MAX)
-            log.info(f"다음 연산까지 {next_sec // 60}분 {next_sec % 60}초 대기...")
-            await asyncio.sleep(next_sec)
-
-    async def _run_compute(self):
+    async def _send_report(self):
         channel = self.get_channel(CPU_CHANNEL_ID)
         if channel is None:
             log.warning(f"채널을 찾을 수 없습니다: {CPU_CHANNEL_ID}")
             return
 
-        log.info("병렬 연산 시작...")
-
-        try:
-            import psutil
-            cpu_before = psutil.cpu_percent(interval=1)
-        except ImportError:
-            cpu_before = 0.0
-
         try:
             loop = asyncio.get_event_loop()
-            info = await loop.run_in_executor(None, run_parallel_compute)
+            status = await loop.run_in_executor(None, collect_status)
+            embed  = build_embed(status)
 
-            try:
-                import psutil
-                cpu_after = psutil.cpu_percent(interval=1)
-            except ImportError:
-                cpu_after = 0.0
-
-            embed = build_result_embed(info, cpu_before, cpu_after)
-
-            if self._result_message is None:
-                self._result_message = await channel.send(embed=embed)
+            if self._status_message is None:
+                self._status_message = await channel.send(embed=embed)
             else:
                 try:
-                    await self._result_message.edit(embed=embed)
+                    await self._status_message.edit(embed=embed)
                 except discord.NotFound:
-                    self._result_message = await channel.send(embed=embed)
+                    self._status_message = await channel.send(embed=embed)
 
             log.info(
-                f"연산 완료 | 총 {info['total_sec']:.2f}초 | "
-                f"소수 {info['prime_count']:,}개 | "
-                f"CPU {cpu_before:.1f}% → {cpu_after:.1f}%"
+                f"보고 완료 | cron_exists={status['cron_exists']} "
+                f"proc_count={status['proc_count']} "
+                f"cpu={status['cpu_pct']:.1f}% "
+                f"load={status['load1']:.2f}"
             )
 
         except Exception as e:
-            log.error(f"연산 오류: {e}", exc_info=True)
-            try:
-                err_embed = discord.Embed(
-                    title="❌ 연산 오류",
-                    description=f"```{e}```",
-                    color=0xE74C3C,
-                    timestamp=datetime.now(timezone.utc),
-                )
-                await channel.send(embed=err_embed)
-            except Exception:
-                pass
+            log.error(f"보고 오류: {e}", exc_info=True)
 
 
 def main():
@@ -266,11 +263,9 @@ def main():
         log.error("CPU_CHANNEL_ID 환경변수가 설정되지 않았습니다.")
         return
 
-    bot = CpuBot()
+    bot = CronMonitorBot()
     bot.run(CPU_BOT_TOKEN, log_handler=None)
 
 
 if __name__ == "__main__":
-    # Windows/macOS에서 multiprocessing 안전하게 사용하기 위해 필수
-    multiprocessing.freeze_support()
     main()

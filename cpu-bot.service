@@ -1,5 +1,5 @@
 [Unit]
-Description=CPU Keepalive Discord Bot
+Description=Oracle idle 방지 cron 모니터링 Discord Bot
 After=network.target
 
 [Service]
