@@ -1,45 +1,82 @@
 # discord-bot24
 
-오라클 클라우드 무료 인스턴스(VM.Standard.A1.Flex, ARM64)의 시스템 리소스를 1분마다 Discord 채널에 보고하는 모니터링 봇입니다.
+오라클 클라우드 무료 인스턴스(VM.Standard.A1.Flex, ARM64)의 시스템 리소스를 Discord 채널에 보고하는 모니터링 봇 + Oracle idle 회수 방지 cron 설정입니다.
 
-## 기능
+## 구성 요소
 
-- CPU, 메모리, 디스크, 네트워크 사용량을 1분마다 Embed 메시지로 전송
-- 리소스가 임계값을 초과하면 `@here` 경고 알림 전송
-- 임계값 아래로 회복되면 정상화 알림 전송
-- 경고 상태가 지속돼도 반복 알림 없음 (상태 변경 시에만 전송)
-
-## 알림 임계값
-
-| 항목 | 기본값 | 설정 위치 |
-|------|--------|-----------|
-| CPU | 50% | `config.py` `CPU_ALERT_THRESHOLD` |
-| 디스크 | 50% | `config.py` `DISK_ALERT_THRESHOLD` |
-| 네트워크 수신/송신 | 10 MB/s | `config.py` `NET_ALERT_THRESHOLD_KB` |
-
-## 기술 스택
-
-| 항목 | 내용 |
+| 파일 | 역할 |
 |------|------|
-| Runtime | Python 3.10 |
-| Discord | discord.py >= 2.3.0 |
-| 시스템 정보 | psutil >= 5.9.0 |
-| HTTP | aiohttp >= 3.9.0 |
-| 환경변수 | python-dotenv >= 1.0.0 |
-| 프로세스 관리 | systemd |
+| `bot.py` | 시스템 모니터링 봇 (10초 주기, Embed edit 방식) |
+| `cpu_bot.py` | cron idle 방지 상태 모니터링 봇 (10분 주기) |
+| `setup_cron.sh` | 서버에서 한 번 실행하는 cron idle 방지 설정 스크립트 |
+
+---
+
+## 1. 시스템 모니터링 봇 (`bot.py`)
+
+- CPU / 메모리 / 디스크 / 네트워크 사용량을 **10초마다** Embed edit
+- **10분 이동평균** 표시
+- 임계값 초과 시 `@here` 경고 알림, 회복 시 정상화 알림
+- 재시작해도 메시지 누적 없음 (채널 히스토리에서 이전 메시지 복구)
+
+### 알림 임계값
+
+| 항목 | 경고 색상 | @here 알림 | 설정 위치 |
+|------|-----------|------------|-----------|
+| CPU | 80% | 90% | `config.py` |
+| 디스크 | 85% | 50% | `config.py` |
+| 네트워크 | — | 10 MB/s | `config.py` |
+
+---
+
+## 2. Oracle idle 회수 방지
+
+### 판정 기준 (공식)
+
+Oracle은 7일간 아래 세 조건을 **모두** 충족하면 인스턴스를 회수합니다:
+
+- CPU 95th percentile < **20%**
+- 네트워크 < **20%**
+- 메모리 < **20%** (A1 Flex 전용)
+
+세 조건이 AND이므로 **CPU만 20% 이상 유지하면 회수되지 않습니다.**
+
+### cron 방식 (`setup_cron.sh`)
+
+```
+*/5 * * * * root timeout 290 nice md5sum /dev/zero
+```
+
+- 5분마다 4분 50초간 `md5sum /dev/zero` 실행
+- `nice` (우선순위 10)로 실제 서비스에 CPU 자동 양보
+- 코어 1개를 100% 점유 → 전체 CPU 약 25% (4코어 기준)
+- Oracle idle 기준 충분히 초과
+
+### cron 모니터링 봇 (`cpu_bot.py`)
+
+- `/etc/cron.d/dummy-load` 파일 존재 여부 확인
+- `md5sum` 프로세스 실행 수 확인
+- CPU 사용률 / load average 표시
+- 10분마다 Discord Embed edit
+
+---
 
 ## 파일 구조
 
 ```
 discord-bot24/
-├── bot.py                  # 메인 봇 (1분 루프, Embed 전송, 알림 로직)
+├── bot.py                  # 시스템 모니터링 봇
+├── cpu_bot.py              # cron 상태 모니터링 봇
 ├── config.py               # 설정값 및 임계값
 ├── system_info.py          # psutil 기반 시스템 정보 수집
+├── setup_cron.sh           # cron idle 방지 설정 스크립트 (서버에서 1회 실행)
+├── oracle-monitor.service  # systemd 서비스 (bot.py)
+├── cpu-bot.service         # systemd 서비스 (cpu_bot.py)
 ├── requirements.txt        # Python 의존성
-├── .env.example            # 환경변수 템플릿
-├── .env                    # 실제 환경변수 (git 제외)
-└── oracle-monitor.service  # systemd 서비스 파일
+└── .env.example            # 환경변수 템플릿
 ```
+
+---
 
 ## 설치 및 배포
 
@@ -69,50 +106,62 @@ nano .env
 DISCORD_BOT_TOKEN=디스코드_봇_토큰
 MONITOR_CHANNEL_ID=채널_ID
 INSTANCE_NAME=Oracle Cloud (ARM64)
+
+CPU_BOT_TOKEN=cron_모니터_봇_토큰
+CPU_CHANNEL_ID=채널_ID
 ```
 
-- **DISCORD_BOT_TOKEN**: [Discord Developer Portal](https://discord.com/developers/applications) → Bot → Reset Token
-- **MONITOR_CHANNEL_ID**: 디스코드 개발자 모드 ON → 채널 우클릭 → ID 복사
-
-### 4. systemd 등록
+### 4. cron idle 방지 설정 (최초 1회)
 
 ```bash
+chmod +x setup_cron.sh
+sudo ./setup_cron.sh
+```
+
+### 5. systemd 등록
+
+```bash
+# 모니터링 봇
 sudo cp oracle-monitor.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable oracle-monitor
 sudo systemctl start oracle-monitor
+
+# cron 모니터링 봇
+sudo cp cpu-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable cpu-bot
+sudo systemctl start cpu-bot
 ```
 
-### 5. 상태 확인
+### 6. 상태 확인
 
 ```bash
-sudo systemctl status oracle-monitor
+sudo systemctl status oracle-monitor cpu-bot
 sudo journalctl -u oracle-monitor -f
+sudo journalctl -u cpu-bot -f
 ```
+
+---
 
 ## 업데이트 배포
 
 ```bash
 cd ~/discord-bot24
-git pull origin main
-sudo systemctl restart oracle-monitor
+git pull
+sudo systemctl restart oracle-monitor cpu-bot
 ```
 
-## 디스코드 출력 예시
+---
 
-```
-✅ Oracle Cloud (ARM64) 시스템 모니터
-VM.Standard.A1.Flex | 업타임: 121일 5시간 13분
+## 기술 스택
 
-CPU
-██░░░░░░░░  21.3%
-코어별: 18% / 24% / 19% / 24%
-
-메모리 (RAM)              스왑
-███░░░░░░░  28.5%         ░░░░░░░░░░  0.0%
-6.8 GB / 24.0 GB          0.0 GB / 0.0 GB
-
-디스크 (/)                네트워크
-██░░░░░░░░  26.5%         수신 ↓ 12.3 KB/s
-11.9 GB / 45.0 GB         송신 ↑ 4.1 KB/s
-```
+| 항목 | 내용 |
+|------|------|
+| Runtime | Python 3.10 |
+| Discord | discord.py >= 2.3.0 |
+| 시스템 정보 | psutil >= 5.9.0 |
+| HTTP | aiohttp >= 3.9.0 |
+| 환경변수 | python-dotenv >= 1.0.0 |
+| 프로세스 관리 | systemd + cron |
+| 서버 | Oracle Cloud VM.Standard.A1.Flex (ARM64, 4 OCPU, 24GB) |
