@@ -37,9 +37,9 @@ CPU_CHANNEL_ID     = int(os.getenv("CPU_CHANNEL_ID", "0"))
 COMPUTE_INTERVAL   = 10 * 60          # 사용 안 함 (랜덤 주기로 대체)
 NUM_WORKERS        = max(1, multiprocessing.cpu_count() // 2)  # 절반 코어만 사용 (50% 목표)
 SIEVE_LIMIT        = 150_000_000      # 소수 탐색 상한 (1억5000만)
-HASH_ITERATIONS    = 80_000_000       # SHA-256 반복 횟수 (8000만)
-INTERVAL_MIN       = 5 * 60          # 최소 대기 (5분)
-INTERVAL_MAX       = 20 * 60         # 최대 대기 (20분)
+HASH_ITERATIONS    = 120_000_000      # SHA-256 반복 횟수 (1억2000만)
+INTERVAL_MIN       = 3 * 60          # 최소 대기 (3분)
+INTERVAL_MAX       = 8 * 60          # 최대 대기 (8분)
 
 # ── 임베드 색상 ───────────────────────────────────────────
 COLOR_INFO  = 0x3498DB
