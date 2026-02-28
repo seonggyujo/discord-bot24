@@ -132,6 +132,8 @@ class OracleMonitorBot(discord.Client):
         super().__init__(intents=intents)
         # 이전 알림 상태 추적 (연속 알림 방지)
         self._alert_state = {"cpu": False, "disk": False, "net_recv": False, "net_sent": False}
+        # 고정 상태 메시지 (edit용)
+        self._status_message: discord.Message | None = None
 
     async def setup_hook(self):
         # 봇 준비 후 태스크 시작
@@ -161,7 +163,16 @@ class OracleMonitorBot(discord.Client):
                 None, get_system_stats
             )
             embed = build_embed(stats)
-            await channel.send(embed=embed)
+
+            # 고정 메시지가 있으면 edit, 없으면 새로 전송
+            if self._status_message is None:
+                self._status_message = await channel.send(embed=embed)
+            else:
+                try:
+                    await self._status_message.edit(embed=embed)
+                except discord.NotFound:
+                    # 메시지가 삭제된 경우 새로 전송
+                    self._status_message = await channel.send(embed=embed)
 
             # 알림 상태 확인 및 전송 (상태가 바뀔 때만)
             cpu_alert       = stats.cpu_percent  >= config.CPU_ALERT_THRESHOLD
