@@ -35,8 +35,8 @@ CPU_BOT_TOKEN      = os.getenv("CPU_BOT_TOKEN", "")
 CPU_CHANNEL_ID     = int(os.getenv("CPU_CHANNEL_ID", "0"))
 COMPUTE_INTERVAL   = 10 * 60          # 10분마다 실행
 NUM_WORKERS        = multiprocessing.cpu_count()   # 4코어 전부 사용
-SIEVE_LIMIT        = 8_000_000        # 소수 탐색 상한 (800만)
-HASH_ITERATIONS    = 2_000_000        # SHA-256 반복 횟수 (200만)
+SIEVE_LIMIT        = 50_000_000       # 소수 탐색 상한 (5000만)
+HASH_ITERATIONS    = 20_000_000       # SHA-256 반복 횟수 (2000만)
 
 # ── 임베드 색상 ───────────────────────────────────────────
 COLOR_INFO  = 0x3498DB
