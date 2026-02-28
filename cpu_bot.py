@@ -170,6 +170,8 @@ class CpuBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
+        # 고정 결과 메시지 (edit용)
+        self._result_message: discord.Message | None = None
 
     async def setup_hook(self):
         self.compute_task.start()
@@ -211,7 +213,15 @@ class CpuBot(discord.Client):
                 cpu_after = 0.0
 
             embed = build_result_embed(info, cpu_before, cpu_after)
-            await channel.send(embed=embed)
+
+            # 고정 메시지가 있으면 edit, 없으면 새로 전송
+            if self._result_message is None:
+                self._result_message = await channel.send(embed=embed)
+            else:
+                try:
+                    await self._result_message.edit(embed=embed)
+                except discord.NotFound:
+                    self._result_message = await channel.send(embed=embed)
 
             log.info(
                 f"연산 완료 | 총 {info['total_sec']:.2f}초 | "
