@@ -22,7 +22,7 @@ MEM_WARN_THRESHOLD = 80     # %
 DISK_WARN_THRESHOLD = 85    # %
 
 # 알림 임계값 (이 이상이면 @here 알림 전송)
-CPU_ALERT_THRESHOLD  = 50       # %
+CPU_ALERT_THRESHOLD  = 80       # %
 DISK_ALERT_THRESHOLD = 50       # %
 NET_ALERT_THRESHOLD_KB = 10 * 1024  # KB/s (10 MB/s)
 
