@@ -214,6 +214,22 @@ class CronMonitorBot(discord.Client):
                 name="cron idle 방지 작업"
             )
         )
+        # 재시작 후 이전 상태 메시지를 찾아 재사용 (메시지 누적 방지)
+        await self._recover_status_message()
+
+    async def _recover_status_message(self):
+        """채널 최근 메시지에서 봇이 보낸 embed 메시지를 찾아 _status_message로 복구"""
+        channel = self.get_channel(CPU_CHANNEL_ID)
+        if channel is None:
+            return
+        try:
+            async for msg in channel.history(limit=20):
+                if msg.author.id == self.user.id and msg.embeds:
+                    self._status_message = msg
+                    log.info(f"이전 상태 메시지 복구: {msg.id}")
+                    return
+        except Exception as e:
+            log.warning(f"메시지 복구 실패: {e}")
 
     async def _report_loop(self):
         await self.wait_until_ready()

@@ -177,6 +177,22 @@ class OracleMonitorBot(discord.Client):
                 name="Oracle Cloud 서버 모니터링"
             )
         )
+        # 재시작 후 이전 상태 메시지를 찾아 재사용 (메시지 누적 방지)
+        await self._recover_status_message()
+
+    async def _recover_status_message(self):
+        """채널 최근 메시지에서 봇이 보낸 embed 메시지를 찾아 _status_message로 복구"""
+        channel = self.get_channel(config.MONITOR_CHANNEL_ID)
+        if channel is None:
+            return
+        try:
+            async for msg in channel.history(limit=20):
+                if msg.author.id == self.user.id and msg.embeds:
+                    self._status_message = msg
+                    log.info(f"이전 상태 메시지 복구: {msg.id}")
+                    return
+        except Exception as e:
+            log.warning(f"메시지 복구 실패: {e}")
 
     @tasks.loop(seconds=config.MONITOR_INTERVAL_SECONDS)
     async def monitor_task(self):
