@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections import deque
 from datetime import datetime, timezone, timedelta
 
 import discord
@@ -20,8 +21,8 @@ log = logging.getLogger("oracle-monitor")
 KST = timezone(timedelta(hours=9))
 
 
-def build_embed(stats) -> discord.Embed:
-    """시스템 통계를 Discord Embed로 변환"""
+def build_embed(stats, avg: dict) -> discord.Embed:
+    """시스템 통계를 Discord Embed로 변환 (현재값 + 10분 이동평균)"""
 
     # 임계값 초과 여부에 따라 색상 결정
     if stats.cpu_percent >= config.CPU_WARN_THRESHOLD or \
@@ -49,7 +50,8 @@ def build_embed(stats) -> discord.Embed:
         name="CPU",
         value=(
             f"`{cpu_bar}` **{stats.cpu_percent:.1f}%**{cpu_warn}\n"
-            f"코어별: {' / '.join(f'{c:.0f}%' for c in stats.cpu_per_core)}"
+            f"코어별: {' / '.join(f'{c:.0f}%' for c in stats.cpu_per_core)}\n"
+            f"10분 평균: **{avg['cpu']:.1f}%**"
         ),
         inline=False,
     )
@@ -61,7 +63,8 @@ def build_embed(stats) -> discord.Embed:
         name="메모리 (RAM)",
         value=(
             f"`{mem_bar}` **{stats.mem_percent:.1f}%**{mem_warn}\n"
-            f"{stats.mem_used_gb:.1f} GB / {stats.mem_total_gb:.1f} GB"
+            f"{stats.mem_used_gb:.1f} GB / {stats.mem_total_gb:.1f} GB\n"
+            f"10분 평균: **{avg['mem']:.1f}%**"
         ),
         inline=True,
     )
@@ -85,7 +88,8 @@ def build_embed(stats) -> discord.Embed:
         name="디스크 (/)",
         value=(
             f"`{disk_bar}` **{stats.disk_percent:.1f}%**{disk_warn}\n"
-            f"{stats.disk_used_gb:.1f} GB / {stats.disk_total_gb:.1f} GB"
+            f"{stats.disk_used_gb:.1f} GB / {stats.disk_total_gb:.1f} GB\n"
+            f"10분 평균: **{avg['disk']:.1f}%**"
         ),
         inline=True,
     )
@@ -95,7 +99,8 @@ def build_embed(stats) -> discord.Embed:
         name="네트워크",
         value=(
             f"수신 ↓ **{stats.net_recv_kb:.1f} KB/s**\n"
-            f"송신 ↑ **{stats.net_sent_kb:.1f} KB/s**"
+            f"송신 ↑ **{stats.net_sent_kb:.1f} KB/s**\n"
+            f"10분 평균: ↓ **{avg['net_recv']:.1f}** / ↑ **{avg['net_sent']:.1f}** KB/s"
         ),
         inline=True,
     )
@@ -127,6 +132,9 @@ def build_alert_embed(stats) -> discord.Embed:
 
 
 class OracleMonitorBot(discord.Client):
+    # 10초 주기 × 60 = 10분치 샘플
+    _WINDOW = 60
+
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
@@ -134,6 +142,27 @@ class OracleMonitorBot(discord.Client):
         self._alert_state = {"cpu": False, "disk": False, "net_recv": False, "net_sent": False}
         # 고정 상태 메시지 (edit용)
         self._status_message: discord.Message | None = None
+        # 이동평균 버퍼
+        self._buf_cpu      = deque(maxlen=self._WINDOW)
+        self._buf_mem      = deque(maxlen=self._WINDOW)
+        self._buf_disk     = deque(maxlen=self._WINDOW)
+        self._buf_net_recv = deque(maxlen=self._WINDOW)
+        self._buf_net_sent = deque(maxlen=self._WINDOW)
+
+    def _push(self, stats) -> dict:
+        """샘플을 버퍼에 추가하고 현재 이동평균 반환"""
+        self._buf_cpu.append(stats.cpu_percent)
+        self._buf_mem.append(stats.mem_percent)
+        self._buf_disk.append(stats.disk_percent)
+        self._buf_net_recv.append(stats.net_recv_kb)
+        self._buf_net_sent.append(stats.net_sent_kb)
+        return {
+            "cpu":      sum(self._buf_cpu)      / len(self._buf_cpu),
+            "mem":      sum(self._buf_mem)      / len(self._buf_mem),
+            "disk":     sum(self._buf_disk)     / len(self._buf_disk),
+            "net_recv": sum(self._buf_net_recv) / len(self._buf_net_recv),
+            "net_sent": sum(self._buf_net_sent) / len(self._buf_net_sent),
+        }
 
     async def setup_hook(self):
         # 봇 준비 후 태스크 시작
@@ -162,7 +191,8 @@ class OracleMonitorBot(discord.Client):
             stats = await asyncio.get_event_loop().run_in_executor(
                 None, get_system_stats
             )
-            embed = build_embed(stats)
+            avg = self._push(stats)
+            embed = build_embed(stats, avg)
 
             # 고정 메시지가 있으면 edit, 없으면 새로 전송
             if self._status_message is None:
