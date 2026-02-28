@@ -11,6 +11,7 @@ import logging
 import math
 import multiprocessing
 import os
+import random
 import time
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone, timedelta
@@ -33,10 +34,12 @@ KST = timezone(timedelta(hours=9))
 # ── 환경변수 ──────────────────────────────────────────────
 CPU_BOT_TOKEN      = os.getenv("CPU_BOT_TOKEN", "")
 CPU_CHANNEL_ID     = int(os.getenv("CPU_CHANNEL_ID", "0"))
-COMPUTE_INTERVAL   = 10 * 60          # 10분마다 실행
+COMPUTE_INTERVAL   = 10 * 60          # 사용 안 함 (랜덤 주기로 대체)
 NUM_WORKERS        = multiprocessing.cpu_count()   # 4코어 전부 사용
-SIEVE_LIMIT        = 50_000_000       # 소수 탐색 상한 (5000만)
-HASH_ITERATIONS    = 20_000_000       # SHA-256 반복 횟수 (2000만)
+SIEVE_LIMIT        = 150_000_000      # 소수 탐색 상한 (1억5000만)
+HASH_ITERATIONS    = 80_000_000       # SHA-256 반복 횟수 (8000만)
+INTERVAL_MIN       = 5 * 60          # 최소 대기 (5분)
+INTERVAL_MAX       = 20 * 60         # 최대 대기 (20분)
 
 # ── 임베드 색상 ───────────────────────────────────────────
 COLOR_INFO  = 0x3498DB
@@ -174,11 +177,11 @@ class CpuBot(discord.Client):
         self._result_message: discord.Message | None = None
 
     async def setup_hook(self):
-        self.compute_task.start()
+        self.loop.create_task(self._compute_loop())
 
     async def on_ready(self):
         log.info(f"CPU 봇 로그인 완료: {self.user} (ID: {self.user.id})")
-        log.info(f"채널 ID: {CPU_CHANNEL_ID} | 워커 수: {NUM_WORKERS} | 실행 주기: {COMPUTE_INTERVAL // 60}분")
+        log.info(f"채널 ID: {CPU_CHANNEL_ID} | 워커 수: {NUM_WORKERS} | 주기: {INTERVAL_MIN//60}~{INTERVAL_MAX//60}분 랜덤")
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.playing,
@@ -186,8 +189,22 @@ class CpuBot(discord.Client):
             )
         )
 
-    @tasks.loop(seconds=COMPUTE_INTERVAL)
-    async def compute_task(self):
+    async def _compute_loop(self):
+        await self.wait_until_ready()
+
+        # 첫 연산 전 1분 대기
+        log.info("첫 연산까지 1분 대기...")
+        await asyncio.sleep(60)
+
+        while not self.is_closed():
+            await self._run_compute()
+
+            # 다음 연산까지 랜덤 대기
+            next_sec = random.randint(INTERVAL_MIN, INTERVAL_MAX)
+            log.info(f"다음 연산까지 {next_sec // 60}분 {next_sec % 60}초 대기...")
+            await asyncio.sleep(next_sec)
+
+    async def _run_compute(self):
         channel = self.get_channel(CPU_CHANNEL_ID)
         if channel is None:
             log.warning(f"채널을 찾을 수 없습니다: {CPU_CHANNEL_ID}")
@@ -202,7 +219,6 @@ class CpuBot(discord.Client):
             cpu_before = 0.0
 
         try:
-            # ProcessPoolExecutor는 blocking이므로 executor에서 실행
             loop = asyncio.get_event_loop()
             info = await loop.run_in_executor(None, run_parallel_compute)
 
@@ -214,7 +230,6 @@ class CpuBot(discord.Client):
 
             embed = build_result_embed(info, cpu_before, cpu_after)
 
-            # 고정 메시지가 있으면 edit, 없으면 새로 전송
             if self._result_message is None:
                 self._result_message = await channel.send(embed=embed)
             else:
@@ -241,13 +256,6 @@ class CpuBot(discord.Client):
                 await channel.send(embed=err_embed)
             except Exception:
                 pass
-
-    @compute_task.before_loop
-    async def before_compute(self):
-        await self.wait_until_ready()
-        # 봇 시작 직후 바로 한 번 실행하지 않고 1분 대기
-        log.info("첫 연산까지 1분 대기...")
-        await asyncio.sleep(60)
 
 
 def main():
