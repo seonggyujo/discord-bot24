@@ -111,6 +111,10 @@ def build_alert_embed(stats) -> discord.Embed:
         alerts.append(f"CPU **{stats.cpu_percent:.1f}%** (임계값: {config.CPU_ALERT_THRESHOLD}%)")
     if stats.disk_percent >= config.DISK_ALERT_THRESHOLD:
         alerts.append(f"디스크 **{stats.disk_percent:.1f}%** (임계값: {config.DISK_ALERT_THRESHOLD}%)")
+    if stats.net_recv_kb >= config.NET_ALERT_THRESHOLD_KB:
+        alerts.append(f"네트워크 수신 ↓ **{stats.net_recv_kb / 1024:.1f} MB/s** (임계값: {config.NET_ALERT_THRESHOLD_KB // 1024} MB/s)")
+    if stats.net_sent_kb >= config.NET_ALERT_THRESHOLD_KB:
+        alerts.append(f"네트워크 송신 ↑ **{stats.net_sent_kb / 1024:.1f} MB/s** (임계값: {config.NET_ALERT_THRESHOLD_KB // 1024} MB/s)")
 
     embed = discord.Embed(
         title="🚨 리소스 경고",
@@ -127,7 +131,7 @@ class OracleMonitorBot(discord.Client):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
         # 이전 알림 상태 추적 (연속 알림 방지)
-        self._alert_state = {"cpu": False, "disk": False}
+        self._alert_state = {"cpu": False, "disk": False, "net_recv": False, "net_sent": False}
 
     async def setup_hook(self):
         # 봇 준비 후 태스크 시작
@@ -160,29 +164,38 @@ class OracleMonitorBot(discord.Client):
             await channel.send(embed=embed)
 
             # 알림 상태 확인 및 전송 (상태가 바뀔 때만)
-            cpu_alert  = stats.cpu_percent  >= config.CPU_ALERT_THRESHOLD
-            disk_alert = stats.disk_percent >= config.DISK_ALERT_THRESHOLD
+            cpu_alert       = stats.cpu_percent  >= config.CPU_ALERT_THRESHOLD
+            disk_alert      = stats.disk_percent >= config.DISK_ALERT_THRESHOLD
+            net_recv_alert  = stats.net_recv_kb  >= config.NET_ALERT_THRESHOLD_KB
+            net_sent_alert  = stats.net_sent_kb  >= config.NET_ALERT_THRESHOLD_KB
             newly_alert = (
-                (cpu_alert  and not self._alert_state["cpu"]) or
-                (disk_alert and not self._alert_state["disk"])
+                (cpu_alert      and not self._alert_state["cpu"])      or
+                (disk_alert     and not self._alert_state["disk"])     or
+                (net_recv_alert and not self._alert_state["net_recv"]) or
+                (net_sent_alert and not self._alert_state["net_sent"])
             )
             newly_recover = (
-                (not cpu_alert  and self._alert_state["cpu"]) or
-                (not disk_alert and self._alert_state["disk"])
+                (not cpu_alert      and self._alert_state["cpu"])      or
+                (not disk_alert     and self._alert_state["disk"])     or
+                (not net_recv_alert and self._alert_state["net_recv"]) or
+                (not net_sent_alert and self._alert_state["net_sent"])
             )
 
             if newly_alert:
                 alert_embed = build_alert_embed(stats)
                 await channel.send(content="@here", embed=alert_embed)
                 log.warning(
-                    f"알림 전송 | CPU: {stats.cpu_percent:.1f}% DISK: {stats.disk_percent:.1f}%"
+                    f"알림 전송 | CPU: {stats.cpu_percent:.1f}% DISK: {stats.disk_percent:.1f}% "
+                    f"NET_RECV: {stats.net_recv_kb:.0f} KB/s NET_SENT: {stats.net_sent_kb:.0f} KB/s"
                 )
             elif newly_recover:
                 recover_embed = discord.Embed(
                     title="✅ 리소스 정상화",
                     description=(
                         f"• CPU **{stats.cpu_percent:.1f}%**\n"
-                        f"• 디스크 **{stats.disk_percent:.1f}%**"
+                        f"• 디스크 **{stats.disk_percent:.1f}%**\n"
+                        f"• 네트워크 수신 ↓ **{stats.net_recv_kb / 1024:.1f} MB/s**\n"
+                        f"• 네트워크 송신 ↑ **{stats.net_sent_kb / 1024:.1f} MB/s**"
                     ),
                     color=config.COLOR_NORMAL,
                     timestamp=datetime.now(timezone.utc),
@@ -191,8 +204,10 @@ class OracleMonitorBot(discord.Client):
                 await channel.send(embed=recover_embed)
                 log.info("리소스 정상화 알림 전송")
 
-            self._alert_state["cpu"]  = cpu_alert
-            self._alert_state["disk"] = disk_alert
+            self._alert_state["cpu"]       = cpu_alert
+            self._alert_state["disk"]      = disk_alert
+            self._alert_state["net_recv"]  = net_recv_alert
+            self._alert_state["net_sent"]  = net_sent_alert
 
             log.info(
                 f"리포트 전송 | CPU: {stats.cpu_percent:.1f}% "
