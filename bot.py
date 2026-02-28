@@ -104,10 +104,30 @@ def build_embed(stats) -> discord.Embed:
     return embed
 
 
+def build_alert_embed(stats) -> discord.Embed:
+    """임계값 초과 시 전송할 알림 Embed"""
+    alerts = []
+    if stats.cpu_percent >= config.CPU_ALERT_THRESHOLD:
+        alerts.append(f"CPU **{stats.cpu_percent:.1f}%** (임계값: {config.CPU_ALERT_THRESHOLD}%)")
+    if stats.disk_percent >= config.DISK_ALERT_THRESHOLD:
+        alerts.append(f"디스크 **{stats.disk_percent:.1f}%** (임계값: {config.DISK_ALERT_THRESHOLD}%)")
+
+    embed = discord.Embed(
+        title="🚨 리소스 경고",
+        description="\n".join(f"• {a}" for a in alerts),
+        color=config.COLOR_CRIT,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST"))
+    return embed
+
+
 class OracleMonitorBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
+        # 이전 알림 상태 추적 (연속 알림 방지)
+        self._alert_state = {"cpu": False, "disk": False}
 
     async def setup_hook(self):
         # 봇 준비 후 태스크 시작
@@ -138,6 +158,42 @@ class OracleMonitorBot(discord.Client):
             )
             embed = build_embed(stats)
             await channel.send(embed=embed)
+
+            # 알림 상태 확인 및 전송 (상태가 바뀔 때만)
+            cpu_alert  = stats.cpu_percent  >= config.CPU_ALERT_THRESHOLD
+            disk_alert = stats.disk_percent >= config.DISK_ALERT_THRESHOLD
+            newly_alert = (
+                (cpu_alert  and not self._alert_state["cpu"]) or
+                (disk_alert and not self._alert_state["disk"])
+            )
+            newly_recover = (
+                (not cpu_alert  and self._alert_state["cpu"]) or
+                (not disk_alert and self._alert_state["disk"])
+            )
+
+            if newly_alert:
+                alert_embed = build_alert_embed(stats)
+                await channel.send(content="@here", embed=alert_embed)
+                log.warning(
+                    f"알림 전송 | CPU: {stats.cpu_percent:.1f}% DISK: {stats.disk_percent:.1f}%"
+                )
+            elif newly_recover:
+                recover_embed = discord.Embed(
+                    title="✅ 리소스 정상화",
+                    description=(
+                        f"• CPU **{stats.cpu_percent:.1f}%**\n"
+                        f"• 디스크 **{stats.disk_percent:.1f}%**"
+                    ),
+                    color=config.COLOR_NORMAL,
+                    timestamp=datetime.now(timezone.utc),
+                )
+                recover_embed.set_footer(text=datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST"))
+                await channel.send(embed=recover_embed)
+                log.info("리소스 정상화 알림 전송")
+
+            self._alert_state["cpu"]  = cpu_alert
+            self._alert_state["disk"] = disk_alert
+
             log.info(
                 f"리포트 전송 | CPU: {stats.cpu_percent:.1f}% "
                 f"MEM: {stats.mem_percent:.1f}% "
