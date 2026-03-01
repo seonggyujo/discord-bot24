@@ -132,8 +132,8 @@ def build_alert_embed(stats) -> discord.Embed:
 
 
 class OracleMonitorBot(discord.Client):
-    # 10초 주기 × 60 = 10분치 샘플
-    _WINDOW = 60
+    # 5초 주기 × 120 = 10분치 샘플
+    _WINDOW = 120
 
     def __init__(self):
         intents = discord.Intents.default()

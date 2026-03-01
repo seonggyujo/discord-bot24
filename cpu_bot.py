@@ -8,7 +8,6 @@ CPU / 메모리 사용량 상위 프로세스를 주기적으로 Discord에 보�
 import asyncio
 import logging
 import os
-import time
 from datetime import datetime, timezone, timedelta
 
 import discord
@@ -31,8 +30,8 @@ CPU_BOT_TOKEN  = os.getenv("CPU_BOT_TOKEN", "")
 CPU_CHANNEL_ID = int(os.getenv("CPU_CHANNEL_ID", "0"))
 
 # 보고 주기 (초)
-REPORT_INTERVAL = 5 * 60   # 5분마다
-TOP_N = 5                   # 상위 몇 개 프로세스
+REPORT_INTERVAL = 5   # 5초마다
+TOP_N = 5             # 상위 몇 개 프로세스
 
 # ── 임베드 색상 ───────────────────────────────────────────
 COLOR_NORMAL = 0x3498DB   # 파랑
@@ -45,15 +44,6 @@ COLOR_WARN   = 0xE67E22   # 주황 — CPU 1위 프로세스가 50% 이상
 
 def collect_top_processes() -> dict:
     """CPU / 메모리 상위 프로세스 수집"""
-    # cpu_percent는 두 번 호출 사이의 델타이므로 1초 간격으로 두 번 측정
-    for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "username"]):
-        try:
-            p.cpu_percent()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-
-    time.sleep(1)
-
     procs = []
     for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "username"]):
         try:

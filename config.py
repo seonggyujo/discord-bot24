@@ -8,7 +8,7 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 MONITOR_CHANNEL_ID = int(os.getenv("MONITOR_CHANNEL_ID", "0"))
 
 # 모니터링 설정
-MONITOR_INTERVAL_SECONDS = 10  # 10초마다 보고
+MONITOR_INTERVAL_SECONDS = 5   # 5초마다 보고
 
 # 오라클 클라우드 인스턴스 정보 (표시용)
 INSTANCE_NAME = os.getenv("INSTANCE_NAME", "Oracle Cloud (ARM64)")
