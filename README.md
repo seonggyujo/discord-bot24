@@ -1,14 +1,13 @@
 # discord-bot24
 
-오라클 클라우드 무료 인스턴스(VM.Standard.A1.Flex, ARM64)의 시스템 리소스를 Discord 채널에 보고하는 모니터링 봇 + Oracle idle 회수 방지 cron 설정입니다.
+오라클 클라우드 무료 인스턴스(VM.Standard.A1.Flex, ARM64)의 시스템 리소스를 Discord 채널에 보고하는 모니터링 봇입니다.
 
 ## 구성 요소
 
 | 파일 | 역할 |
 |------|------|
 | `bot.py` | 시스템 모니터링 봇 (10초 주기, Embed edit 방식) |
-| `cpu_bot.py` | cron idle 방지 상태 모니터링 봇 (10분 주기) |
-| `setup_cron.sh` | 서버에서 한 번 실행하는 cron idle 방지 설정 스크립트 |
+| `cpu_bot.py` | CPU / 메모리 상위 프로세스 모니터링 봇 (5분 주기) |
 
 ---
 
@@ -29,35 +28,23 @@
 
 ---
 
-## 2. Oracle idle 회수 방지
+## 2. 프로세스 모니터링 봇 (`cpu_bot.py`)
 
-### 판정 기준 (공식)
+- CPU / 메모리 사용량 **상위 5개 프로세스**를 5분마다 Embed edit
+- 1위 프로세스가 50% 이상이면 주황색으로 표시
+- 재시작해도 메시지 누적 없음
 
-Oracle은 7일간 아래 세 조건을 **모두** 충족하면 인스턴스를 회수합니다:
+---
+
+## 3. Oracle idle 판정 기준 (참고)
+
+Oracle은 7일간 아래 세 조건을 **모두** 충족하면 Always Free 인스턴스를 회수합니다:
 
 - CPU 95th percentile < **20%**
 - 네트워크 < **20%**
 - 메모리 < **20%** (A1 Flex 전용)
 
 세 조건이 AND이므로 **CPU만 20% 이상 유지하면 회수되지 않습니다.**
-
-### cron 방식 (`setup_cron.sh`)
-
-```
-*/5 * * * * root timeout 290 nice md5sum /dev/zero
-```
-
-- 5분마다 4분 50초간 `md5sum /dev/zero` 실행
-- `nice` (우선순위 10)로 실제 서비스에 CPU 자동 양보
-- 코어 1개를 100% 점유 → 전체 CPU 약 25% (4코어 기준)
-- Oracle idle 기준 충분히 초과
-
-### cron 모니터링 봇 (`cpu_bot.py`)
-
-- `/etc/cron.d/dummy-load` 파일 존재 여부 확인
-- `md5sum` 프로세스 실행 수 확인
-- CPU 사용률 / load average 표시
-- 10분마다 Discord Embed edit
 
 ---
 
@@ -66,10 +53,9 @@ Oracle은 7일간 아래 세 조건을 **모두** 충족하면 인스턴스를 �
 ```
 discord-bot24/
 ├── bot.py                  # 시스템 모니터링 봇
-├── cpu_bot.py              # cron 상태 모니터링 봇
+├── cpu_bot.py              # 프로세스 모니터링 봇
 ├── config.py               # 설정값 및 임계값
 ├── system_info.py          # psutil 기반 시스템 정보 수집
-├── setup_cron.sh           # cron idle 방지 설정 스크립트 (서버에서 1회 실행)
 ├── oracle-monitor.service  # systemd 서비스 (bot.py)
 ├── cpu-bot.service         # systemd 서비스 (cpu_bot.py)
 ├── requirements.txt        # Python 의존성
@@ -107,34 +93,27 @@ DISCORD_BOT_TOKEN=디스코드_봇_토큰
 MONITOR_CHANNEL_ID=채널_ID
 INSTANCE_NAME=Oracle Cloud (ARM64)
 
-CPU_BOT_TOKEN=cron_모니터_봇_토큰
+CPU_BOT_TOKEN=프로세스_모니터_봇_토큰
 CPU_CHANNEL_ID=채널_ID
 ```
 
-### 4. cron idle 방지 설정 (최초 1회)
+### 4. systemd 등록
 
 ```bash
-chmod +x setup_cron.sh
-sudo ./setup_cron.sh
-```
-
-### 5. systemd 등록
-
-```bash
-# 모니터링 봇
+# 시스템 모니터링 봇
 sudo cp oracle-monitor.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable oracle-monitor
 sudo systemctl start oracle-monitor
 
-# cron 모니터링 봇
+# 프로세스 모니터링 봇
 sudo cp cpu-bot.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable cpu-bot
 sudo systemctl start cpu-bot
 ```
 
-### 6. 상태 확인
+### 5. 상태 확인
 
 ```bash
 sudo systemctl status oracle-monitor cpu-bot
@@ -163,5 +142,5 @@ sudo systemctl restart oracle-monitor cpu-bot
 | 시스템 정보 | psutil >= 5.9.0 |
 | HTTP | aiohttp >= 3.9.0 |
 | 환경변수 | python-dotenv >= 1.0.0 |
-| 프로세스 관리 | systemd + cron |
+| 프로세스 관리 | systemd |
 | 서버 | Oracle Cloud VM.Standard.A1.Flex (ARM64, 4 OCPU, 24GB) |
