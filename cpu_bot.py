@@ -30,7 +30,7 @@ CPU_BOT_TOKEN  = os.getenv("CPU_BOT_TOKEN", "")
 CPU_CHANNEL_ID = int(os.getenv("CPU_CHANNEL_ID", "0"))
 
 # 보고 주기 (초)
-REPORT_INTERVAL = 5   # 5초마다
+REPORT_INTERVAL = 10  # 10초마다
 TOP_N = 5             # 상위 몇 개 프로세스
 
 # ── 임베드 색상 ───────────────────────────────────────────
