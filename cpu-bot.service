@@ -4,9 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=homeserver
-WorkingDirectory=/home/homeserver/discord-bot24
-ExecStart=/usr/bin/python3 cpu_bot.py
+User=teddybare
+WorkingDirectory=/home/teddybare/discord-bot24
+ExecStart=/home/teddybare/discord-bot24/venv/bin/python cpu_bot.py
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
