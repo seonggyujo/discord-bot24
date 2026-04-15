@@ -1,11 +1,11 @@
 [Unit]
-Description=Oracle idle 방지 cron 모니터링 Discord Bot
+Description=HomeServer Process Monitor Discord Bot
 After=network.target
 
 [Service]
 Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/discord-bot24
+User=homeserver
+WorkingDirectory=/home/homeserver/discord-bot24
 ExecStart=/usr/bin/python3 cpu_bot.py
 Restart=always
 RestartSec=10

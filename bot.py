@@ -15,7 +15,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-log = logging.getLogger("oracle-monitor")
+log = logging.getLogger("homeserver-monitor")
 
 # 한국 시간대 (UTC+9)
 KST = timezone(timedelta(hours=9))
@@ -131,7 +131,7 @@ def build_alert_embed(stats) -> discord.Embed:
     return embed
 
 
-class OracleMonitorBot(discord.Client):
+class HomeServerMonitorBot(discord.Client):
     # 10초 주기 × 60 = 10분치 샘플
     _WINDOW = 60
 
@@ -174,7 +174,7 @@ class OracleMonitorBot(discord.Client):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="Oracle Cloud 서버 모니터링"
+                name="홈서버 모니터링"
             )
         )
         # 재시작 후 이전 상태 메시지를 찾아 재사용 (메시지 누적 방지)
@@ -288,7 +288,7 @@ def main():
         log.error("MONITOR_CHANNEL_ID 환경변수가 설정되지 않았습니다.")
         return
 
-    bot = OracleMonitorBot()
+    bot = HomeServerMonitorBot()
     bot.run(config.DISCORD_BOT_TOKEN, log_handler=None)
 
 

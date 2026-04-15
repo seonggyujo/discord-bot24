@@ -1,11 +1,11 @@
 [Unit]
-Description=Oracle Cloud Monitor Discord Bot
+Description=HomeServer Monitor Discord Bot
 After=network.target
 
 [Service]
 Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/discord-bot24
+User=homeserver
+WorkingDirectory=/home/homeserver/discord-bot24
 ExecStart=/usr/bin/python3 bot.py
 Restart=always
 RestartSec=10
@@ -13,7 +13,7 @@ Environment=PYTHONUNBUFFERED=1
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=oracle-monitor-bot
+SyslogIdentifier=homeserver-monitor-bot
 
 [Install]
 WantedBy=multi-user.target
